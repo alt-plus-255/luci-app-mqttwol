@@ -1,0 +1,73 @@
+#!/bin/sh
+#
+# For each MQTT payload line, validate as MAC and run etherwake. Loops forever;
+# mosquitto exits are tolerated and retried so the process stays supervised by procd.
+
+set -eu
+
+MQTTWOL_SERVER="${MQTTWOL_SERVER:?}"
+MQTTWOL_PORT="${MQTTWOL_PORT:-1883}"
+MQTTWOL_TOPIC="${MQTTWOL_TOPIC:?}"
+MQTTWOL_INTERFACE="${MQTTWOL_INTERFACE:?}"
+
+USERNAME="${MQTTWOL_USERNAME:-}"
+PASSWORD="${MQTTWOL_PASSWORD-}"
+
+umask 077
+
+warn() {
+	logger -t mqttwol -p daemon.warn "$*"
+}
+
+valid_mac_colon_lower() {
+	printf '%s' "$1" | grep -qxE '^([0-9a-f]{2}:){5}[0-9a-f]{2}$'
+}
+
+normalize_line() {
+	_s="$1"
+	_s="$(printf '%s' "$_s" | tr -d '\r')"
+	_s="$(printf '%s' "$_s" | awk '{ sub(/^[[:space:]]+/, ""); sub(/[[:space:]]+$/, ""); print }')"
+	_s="$(printf '%s' "$_s" | tr 'A-F' 'a-f' | tr '-' ':')"
+	printf '%s' "$_s"
+}
+
+wake() {
+	line="$(normalize_line "$1")"
+	[ -n "$line" ] || return 0
+
+	if ! valid_mac_colon_lower "$line"; then
+		warn "ignored non-MAC payload: $line"
+		return 0
+	fi
+
+	logger -t mqttwol -p daemon.notice "WOL for $line via $MQTTWOL_INTERFACE"
+	if ! etherwake -i "$MQTTWOL_INTERFACE" "$line" 2>/dev/null; then
+		warn "etherwake failed for $line"
+	fi
+}
+
+run_stream() {
+	if [ -n "$USERNAME" ]; then
+		mosquitto_sub \
+			-h "$MQTTWOL_SERVER" \
+			-p "$MQTTWOL_PORT" \
+			-t "$MQTTWOL_TOPIC" \
+			-q 1 \
+			-u "$USERNAME" \
+			-P "${PASSWORD:-}"
+	else
+		mosquitto_sub \
+			-h "$MQTTWOL_SERVER" \
+			-p "$MQTTWOL_PORT" \
+			-t "$MQTTWOL_TOPIC" \
+			-q 1
+	fi
+}
+
+while true; do
+	run_stream | while IFS= read -r payload; do
+		wake "$payload" || true
+	done
+	warn "mosquitto_sub stopped, retrying in 2s"
+	sleep 2
+done

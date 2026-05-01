@@ -1,0 +1,9 @@
+
+config mqttwol 'main'
+	option enabled '0'
+	option server '192.168.1.1'
+	option port '1883'
+	option username ''
+	option password ''
+	option topic 'home/router/wol'
+	option interface 'br-lan'
