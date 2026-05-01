@@ -2,16 +2,55 @@
 #
 # For each MQTT payload line, validate as MAC and run etherwake. Loops forever;
 # mosquitto exits are tolerated and retried so the process stays supervised by procd.
+# Credentials: when MQTTWOL_USE_AUTH=1 read mqttwol.main from UCI (avoids procd/shell
+# mangling); optional env MQTTWOL_USERNAME / MQTTWOL_PASSWORD fill gaps.
 
 set -eu
+
+UCI=/sbin/uci
+[ -x "$UCI" ] || UCI=/bin/uci
+[ -x "$UCI" ] || UCI="$(command -v uci 2>/dev/null || true)"
+[ -n "$UCI" ] || {
+	logger -t mqttwol -p daemon.err "mqttwol: uci binary not found"
+	exit 1
+}
 
 MQTTWOL_SERVER="${MQTTWOL_SERVER:?}"
 MQTTWOL_PORT="${MQTTWOL_PORT:-1883}"
 MQTTWOL_TOPIC="${MQTTWOL_TOPIC:?}"
 MQTTWOL_INTERFACES="${MQTTWOL_INTERFACES:?}"
 
-USERNAME="${MQTTWOL_USERNAME:-}"
-PASSWORD="${MQTTWOL_PASSWORD-}"
+_MUA="${MQTTWOL_USE_AUTH:-0}"
+MQTTWOL_USE_AUTH="$(printf '%s' "$_MUA" | tr -d '\r\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+
+trim_val() {
+	printf '%s' "$1" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
+}
+
+MQTT_USER=""
+MQTT_PASS=""
+
+if [ "$MQTTWOL_USE_AUTH" = "1" ]; then
+	MQTT_USER="$(trim_val "$("$UCI" -q get mqttwol.main.username 2>/dev/null || true)")"
+	MQTT_PASS="$(trim_val "$("$UCI" -q get mqttwol.main.password 2>/dev/null || true)")"
+	if [ -z "$MQTT_USER" ] && [ -n "${MQTTWOL_USERNAME-}" ]; then
+		MQTT_USER="$(trim_val "$MQTTWOL_USERNAME")"
+	fi
+	if [ -z "$MQTT_PASS" ] && [ -n "${MQTTWOL_PASSWORD-}" ]; then
+		MQTT_PASS="$(trim_val "$MQTTWOL_PASSWORD")"
+	fi
+
+	if [ -z "$MQTT_USER" ]; then
+		logger -t mqttwol -p daemon.err "mqttwol: MQTT auth enabled but username is empty — update mqttwol-sub from package, Save in LuCI, check /etc/config/mqttwol"
+	fi
+	pass_note=no
+	[ -n "$MQTT_PASS" ] && pass_note=yes
+	logger -t mqttwol -p daemon.info "mqttwol-sub: MQTT auth ON, user_len=${#MQTT_USER} password_set=$pass_note (UCI mqttwol.main)"
+elif [ -n "${MQTTWOL_USERNAME-}" ] || [ -n "${MQTTWOL_PASSWORD-}" ]; then
+	MQTT_USER="$(trim_val "${MQTTWOL_USERNAME:-}")"
+	MQTT_PASS="$(trim_val "${MQTTWOL_PASSWORD:-}")"
+	logger -t mqttwol -p daemon.notice "mqttwol-sub: MQTT auth from env only — set option use_auth 1 in UCI"
+fi
 
 umask 077
 
@@ -49,14 +88,23 @@ wake() {
 }
 
 run_stream() {
-	if [ -n "$USERNAME" ]; then
-		mosquitto_sub \
-			-h "$MQTTWOL_SERVER" \
-			-p "$MQTTWOL_PORT" \
-			-t "$MQTTWOL_TOPIC" \
-			-q 1 \
-			-u "$USERNAME" \
-			-P "${PASSWORD:-}"
+	if [ -n "$MQTT_USER" ]; then
+		if [ -n "$MQTT_PASS" ]; then
+			mosquitto_sub \
+				-h "$MQTTWOL_SERVER" \
+				-p "$MQTTWOL_PORT" \
+				-t "$MQTTWOL_TOPIC" \
+				-q 1 \
+				-u "$MQTT_USER" \
+				-P "$MQTT_PASS"
+		else
+			mosquitto_sub \
+				-h "$MQTTWOL_SERVER" \
+				-p "$MQTTWOL_PORT" \
+				-t "$MQTTWOL_TOPIC" \
+				-q 1 \
+				-u "$MQTT_USER"
+		fi
 	else
 		mosquitto_sub \
 			-h "$MQTTWOL_SERVER" \

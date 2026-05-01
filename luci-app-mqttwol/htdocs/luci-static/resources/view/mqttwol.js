@@ -5,6 +5,27 @@
 'require fs';
 'require tools.widgets as widgets';
 
+/** Value fields without browser/password-manager autofill (LuCI/router logins). */
+const MQTTAuthValue = form.Value.extend({
+	__name__: 'CBI.MQTTAuthValue',
+	renderWidget: function(section_id, option_index, cfgvalue) {
+		const nodes = form.Value.prototype.renderWidget.call(this,
+			section_id, option_index, cfgvalue);
+		const input = nodes.querySelector('input');
+		if (input) {
+			if (this.password) {
+				input.setAttribute('autocomplete', 'new-password');
+			} else {
+				input.setAttribute('autocomplete', 'off');
+			}
+			input.setAttribute('data-lpignore', 'true');
+			input.setAttribute('data-1p-ignore', 'true');
+			input.setAttribute('data-bwignore', 'true');
+		}
+		return nodes;
+	},
+});
+
 return view.extend({
 	load: function() {
 		return uci.load('mqttwol');
@@ -35,13 +56,15 @@ return view.extend({
 		o = s.option(form.Flag, 'use_auth', _('MQTT use authentication'));
 		o.default = o.disabled;
 
-		o = s.option(form.Value, 'username', _('MQTT username'));
+		o = s.option(MQTTAuthValue, 'username', _('MQTT username'));
+		o.description = _('Not the router login; browser autofill is disabled here.');
 		o.depends('use_auth', '1');
 		o.datatype = 'string';
 		o.optional = true;
 
-		o = s.option(form.Value, 'password', _('MQTT password'));
+		o = s.option(MQTTAuthValue, 'password', _('MQTT password'));
 		o.password = true;
+		o.description = _('MQTT broker password only; disable saving in browser if prompted.');
 		o.depends('use_auth', '1');
 		o.datatype = 'string';
 		o.optional = true;

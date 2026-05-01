@@ -62,7 +62,7 @@ flowchart TB
 1. **Пользователь** открывает **Services → MQTT Wake-on-LAN**, правит брокер, порт, топик, флаг **MQTT use authentication**, при необходимости логин/пароль, выбирает один или несколько интерфейсов в **Ethernet interfaces**, включает сервис и жмёт сохранение.
 2. **`mqttwol.js`** при сохранении: если auth выключен — **удаляет** из UCI `username` и `password`; затем коммитит изменения и вызывает **`/etc/init.d/mqttwol restart`** (нужны права в ACL, см. ниже).
 3. **`/etc/init.d/mqttwol`** при `enabled=1` собирает список интерфейсов из **`config_list_foreach main interface`** (и запасной вариант для старого `option interface`), для каждого элемента пытается **`network_get_physdev`** (OpenWrt `network.sh`); если логическое имя не резолвится — в список попадает строка как есть. В procd передаётся **`MQTTWOL_INTERFACES`** (через пробел).
-4. **`mqttwol-sub`** в бесконечном цикле запускает **`mosquitto_sub`**, читает строки, нормализует и проверяет MAC, для каждого MAC вызывает **`etherwake -i <iface>`** для **каждого** интерфейса из **`MQTTWOL_INTERFACES`**. Логи: **`logread`**, тег **`mqttwol`**.
+4. **`mqttwol-sub`** в бесконечном цикле запускает **`mosquitto_sub`**, читает строки, нормализует и проверяет MAC, для каждого MAC вызывает **`etherwake -i <iface>`** для **каждого** интерфейса из **`MQTTWOL_INTERFACES`**. При **`use_auth=1`** логин и пароль читаются через **`uci get mqttwol.main.*`** (не через переменные окружения — иначе procd ломает спецсимволы и возможны ошибки авторизации MQTT). Логи: **`logread`**, тег **`mqttwol`**.
 5. **`procd_add_reload_trigger mqttwol`** перезагружает сервис при изменении конфига `mqttwol` снаружи LuCI.
 
 ---
