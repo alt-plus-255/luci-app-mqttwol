@@ -1,0 +1,15 @@
+ARG BASE_IMAGE=luci-app-mqttwol-sdk-apk-base:local
+FROM ${BASE_IMAGE}
+
+WORKDIR /builder
+
+COPY . /src/luci-app-mqttwol
+
+RUN mkdir -p /builder/package/feeds/base/luci-app-mqttwol \
+ && cp -a /src/luci-app-mqttwol/. /builder/package/feeds/base/luci-app-mqttwol/ \
+ && rm -rf /builder/package/feeds/base/luci-app-mqttwol/.git \
+ && [ -f .config ] || touch .config \
+ && sed -i '/^CONFIG_PACKAGE_luci-app-mqttwol=/d' .config \
+ && printf 'CONFIG_PACKAGE_luci-app-mqttwol=m\n' >> .config \
+ && make defconfig \
+ && make package/luci-app-mqttwol/compile V=s -j"$(nproc)"

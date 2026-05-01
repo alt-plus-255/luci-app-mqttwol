@@ -45,8 +45,12 @@ luci-app-mqttwol/
 ├── Makefile                         # feeds/package recipe and install layout
 ├── README.md                        # operational & maintenance documentation
 ├── scripts/
-│   ├── prepare-release-artifacts.sh # maintainer helper: export apk + pubkey
-│   └── router-install.sh            # one-shot installer for end users
+│   ├── build-sdk-packages.sh        # SDK docker build for apk+ipk
+├── sdk/
+│   ├── Dockerfile-sdk-apk-base      # cached SDK base for apk builds
+│   ├── Dockerfile-sdk-apk           # package build on apk base
+│   ├── Dockerfile-sdk-ipk-base      # cached SDK base for ipk builds
+│   └── Dockerfile-sdk-ipk           # package build on ipk base
 ├── install.sh                       # podkop-style auto-installer from GitHub release
 ├── luasrc/
 │   ├── controller/
@@ -123,32 +127,37 @@ Typical location:
 
 - `openwrt/bin/packages/<arch>/base/luci-app-mqttwol-<version>.apk`
 
+### SDK build (apk + ipk)
+
+Like podkop, this project now ships SDK docker build files and helper script.
+
+```sh
+./scripts/build-sdk-packages.sh
+```
+
+First run builds SDK base images (feeds/setup), next runs reuse cache.
+To force refresh SDK base layers:
+
+```sh
+./scripts/build-sdk-packages.sh ./dist/sdk --rebuild-base
+```
+
+Artifacts are exported to:
+
+- `dist/sdk/apk/luci-app-mqttwol-*.apk`
+- `dist/sdk/ipk/luci-app-mqttwol-*.ipk`
+
 ### Public release workflow (recommended)
 
-To make installation easy for users, publish **both** package and signing key:
-
-1. Build package in your OpenWrt tree.
-2. Export release assets from this repo:
+1. Build both formats with SDK script:
 
 ```sh
-./scripts/prepare-release-artifacts.sh /path/to/openwrt ./dist
+./scripts/build-sdk-packages.sh ./dist/sdk
 ```
 
-3. Upload from `./dist` to GitHub Release (or any static hosting):
-   - `luci-app-mqttwol-*.apk`
-   - `public-key.pem` (optional, only if you want trusted-key install mode)
-
-4. Give users one command installer:
-
-```sh
-wget -O /tmp/mqttwol-install.sh "<RAW_ROUTER_INSTALL_SCRIPT_URL>" && \
-sh /tmp/mqttwol-install.sh "<APK_URL>" "<PUBKEY_URL>"
-```
-
-`router-install.sh` will:
-- download apk to `/tmp/`,
-- run `apk add`,
-- enable/restart `mqttwol` service.
+2. Upload release assets to GitHub Release:
+   - `dist/sdk/apk/luci-app-mqttwol-*.apk`
+   - `dist/sdk/ipk/luci-app-mqttwol-*.ipk`
 
 ### One-command install script (podkop-style)
 
@@ -165,6 +174,13 @@ wget -O - https://raw.githubusercontent.com/altplus255/luci-app-mqttwol/main/ins
 - downloads latest release package,
 - for `apk` runs `apk add --allow-untrusted`,
 - installs and starts `mqttwol`.
+
+Optional format override:
+
+```sh
+PKG_FMT=apk wget -O - https://raw.githubusercontent.com/altplus255/luci-app-mqttwol/main/install.sh | sh
+PKG_FMT=ipk wget -O - https://raw.githubusercontent.com/altplus255/luci-app-mqttwol/main/install.sh | sh
+```
 
 If your workstation cannot write `/openwrt/package` due to root ownership, relocate with `sudo chown` or build from a user-owned clone.
 

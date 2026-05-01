@@ -1,0 +1,7 @@
+FROM openwrt/sdk:x86_64-v24.10.3
+
+WORKDIR /builder
+
+# Prepare SDK once; this layer is reused across package rebuilds.
+RUN ./scripts/feeds update -a \
+ && ./scripts/feeds install luci-base mosquitto-client etherwake
