@@ -3,7 +3,7 @@ FROM ${BASE_IMAGE}
 
 WORKDIR /builder
 
-COPY . /src/luci-app-mqttwol
+COPY ./luci-app-mqttwol /src/luci-app-mqttwol
 
 RUN mkdir -p /builder/package/feeds/base/luci-app-mqttwol \
  && cp -a /src/luci-app-mqttwol/. /builder/package/feeds/base/luci-app-mqttwol/ \

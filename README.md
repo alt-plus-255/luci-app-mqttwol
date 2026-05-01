@@ -44,8 +44,7 @@ Reload trigger: **`procd_add_reload_trigger mqttwol`** recomputes the service wh
 luci-app-mqttwol/
 ├── Makefile                         # feeds/package recipe and install layout
 ├── README.md                        # operational & maintenance documentation
-├── scripts/
-│   ├── build-sdk-packages.sh        # SDK docker build for apk+ipk
+├── build-sdk-packages.sh            # SDK docker build for apk+ipk
 ├── sdk/
 │   ├── Dockerfile-sdk-apk-base      # cached SDK base for apk builds
 │   ├── Dockerfile-sdk-apk           # package build on apk base
@@ -132,14 +131,21 @@ Typical location:
 Like podkop, this project now ships SDK docker build files and helper script.
 
 ```sh
-./scripts/build-sdk-packages.sh
+./build-sdk-packages.sh
 ```
 
 First run builds SDK base images (feeds/setup), next runs reuse cache.
 To force refresh SDK base layers:
 
 ```sh
-./scripts/build-sdk-packages.sh ./dist/sdk --rebuild-base
+./build-sdk-packages.sh ./dist/sdk --rebuild-base
+```
+
+Build only one format:
+
+```sh
+./build-sdk-packages.sh ./dist/sdk --only-apk
+./build-sdk-packages.sh ./dist/sdk --only-ipk
 ```
 
 Artifacts are exported to:
@@ -152,7 +158,7 @@ Artifacts are exported to:
 1. Build both formats with SDK script:
 
 ```sh
-./scripts/build-sdk-packages.sh ./dist/sdk
+./build-sdk-packages.sh ./dist/sdk
 ```
 
 2. Upload release assets to GitHub Release:

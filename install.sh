@@ -3,7 +3,7 @@
 
 set -eu
 
-REPO_API="https://api.github.com/repos/altplus255/luci-app-mqttwol/releases/latest"
+REPO_API="https://api.github.com/repos/alt-plus-255/luci-app-mqttwol/releases/latest"
 DOWNLOAD_DIR="/tmp/luci-app-mqttwol-install"
 RETRY_COUNT=3
 PKG_FMT="${PKG_FMT:-auto}" # auto|apk|ipk
