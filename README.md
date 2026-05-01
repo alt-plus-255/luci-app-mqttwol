@@ -1,5 +1,13 @@
 # luci-app-mqttwol
 
+Быстрая установка на роутер (**`bash`** — нужен для конструкции `<(...)`; на чистом `dash` сохраните скрипт в файл и выполните `sh install.sh`):
+
+```sh
+sh <(wget -O - https://raw.githubusercontent.com/alt-plus-255/luci-app-mqttwol/refs/heads/main/install.sh)
+```
+
+---
+
 Пакет **OpenWrt / LuCI**: веб-настройка **`/etc/config/mqttwol`**, сервис **`procd`**, воркер **`mqttwol-sub`**. Подписка на MQTT-топик через **`mosquitto_sub`**, для каждой валидной строки-пейлоада (MAC) вызывается **`etherwake`** на выбранных сетевых интерфейсах.
 
 Жёсткие зависимости: **`luci-base`**, **`mosquitto-client`**, **`etherwake`**.
