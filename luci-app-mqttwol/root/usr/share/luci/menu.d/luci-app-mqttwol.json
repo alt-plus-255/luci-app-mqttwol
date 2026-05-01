@@ -1,0 +1,14 @@
+{
+	"admin/services/mqttwol": {
+		"title": "MQTT Wake-on-LAN",
+		"order": 92,
+		"action": {
+			"type": "view",
+			"path": "mqttwol"
+		},
+		"depends": {
+			"acl": [ "luci-app-mqttwol" ],
+			"uci": { "mqttwol": true }
+		}
+	}
+}

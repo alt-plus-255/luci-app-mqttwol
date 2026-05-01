@@ -1,0 +1,17 @@
+{
+	"luci-app-mqttwol": {
+		"description": "Grant access to MQTT Wake-on-LAN",
+		"read": {
+			"uci": [ "mqttwol" ],
+			"ubus": {
+				"luci-rpc": [ "getNetworkDevices" ]
+			},
+			"file": {
+				"/etc/init.d/mqttwol restart": [ "exec" ]
+			}
+		},
+		"write": {
+			"uci": [ "mqttwol" ]
+		}
+	}
+}

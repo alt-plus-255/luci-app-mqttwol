@@ -35,11 +35,14 @@ define Build/Compile
 endef
 
 define Package/luci-app-mqttwol/install
-	$(INSTALL_DIR) $(1)/usr/lib/lua/luci/controller
-	$(INSTALL_DATA) ./luasrc/controller/mqttwol.lua $(1)/usr/lib/lua/luci/controller/
+	$(INSTALL_DIR) $(1)/www/luci-static/resources/view
+	$(INSTALL_DATA) ./htdocs/luci-static/resources/view/mqttwol.js $(1)/www/luci-static/resources/view/
 
-	$(INSTALL_DIR) $(1)/usr/lib/lua/luci/model/cbi
-	$(INSTALL_DATA) ./luasrc/model/cbi/mqttwol.lua $(1)/usr/lib/lua/luci/model/cbi/
+	$(INSTALL_DIR) $(1)/usr/share/luci/menu.d
+	$(INSTALL_DATA) ./root/usr/share/luci/menu.d/luci-app-mqttwol.json $(1)/usr/share/luci/menu.d/
+
+	$(INSTALL_DIR) $(1)/usr/share/rpcd/acl.d
+	$(INSTALL_DATA) ./root/usr/share/rpcd/acl.d/luci-app-mqttwol.json $(1)/usr/share/rpcd/acl.d/
 
 	$(INSTALL_DIR) $(1)/usr/sbin
 	$(INSTALL_BIN) ./root/usr/sbin/mqttwol-sub $(1)/usr/sbin/mqttwol-sub
@@ -53,10 +56,10 @@ endef
 
 define Package/luci-app-mqttwol/postinst
 #!/bin/sh
-[ -n "$$IPKG_INSTROOT" ] || {
-	/etc/init.d/mqttwol enable >/dev/null 2>&1 || true
-	/etc/init.d/mqttwol restart >/dev/null 2>&1 || true
-}
+[ -z "$$IPKG_INSTROOT" ] || exit 0
+/etc/init.d/rpcd reload >/dev/null 2>&1 || true
+/etc/init.d/mqttwol enable >/dev/null 2>&1 || true
+/etc/init.d/mqttwol restart >/dev/null 2>&1 || true
 exit 0
 endef
 

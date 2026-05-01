@@ -1,222 +1,209 @@
 # luci-app-mqttwol
 
-OpenWrt **LuCI** application and **`procd` service** that subscribes to an MQTT topic, treats each MQTT payload as a Wake-on-LAN MAC address string, and runs **`etherwake -i <interface> <mac>`** for valid addresses. Depends on **`mosquitto-client`** (`mosquitto_sub`) and **`etherwake`** as requested.
+Пакет **OpenWrt / LuCI**: веб-настройка **`/etc/config/mqttwol`**, сервис **`procd`**, воркер **`mqttwol-sub`**. Подписка на MQTT-топик через **`mosquitto_sub`**, для каждой валидной строки-пейлоада (MAC) вызывается **`etherwake`** на выбранных сетевых интерфейсах.
 
-Compared to the [podkop reference](https://github.com/itdoginfo/podkop) (Lua controller + packaged JavaScript SPA), this package uses **classic Lua CBI forms** alongside the packaged shell worker, matching the MQTT/WoL simplicity of the feature set.
-
----
-
-## Architecture
-
-```
-                    ┌──────────────────────────────┐
-                    │ LuCI Lua (mqttwol controller)│
-                    │            +                 │
-                    │ CBI form (model/cbi/mqttwol) │
-                    └────────────────┬─────────────┘
-                                     │ edits
-                                     ▼
-                        /etc/config/mqttwol (uci)
-                                     │
-                        ┌────────────▼────────────┐
-             procd ────► /usr/sbin/mqttwol-sub   │
-                        │ mosquitto_sub  ◄ ─ MQTT │
-                        └─────────┬────────────────┘
-                                  │ parses MAC payloads
-                                  ▼
-                          etherwake -i iface MAC
-                                  │
-                                  └──► LAN Magic Packet broadcast
-```
-
-- **LuCI**: writes UCI blob `mqttwol.main` (`enabled`, `server`, `port`, optional credentials, `topic`, `interface`).
-- **`/etc/init.d/mqttwol`** (`USE_PROCD=1`): when `enabled=1`, spawns **`/usr/sbin/mqttwol-sub`** via `procd` with **`respawn 3600 5 5`**, piping env vars sourced from UCI.
-- **`mqttwol-sub`**: indefinite outer loop rebuilding `mosquitto_sub`; inner `while read` handles each payload instantly. If MQTT disconnects, the pipe ends, the shell notices, logs a warning, sleeps 2s, and resumes (defence in depth on top of procd restart policy).
-- **Logging**: BusyBox `logger` → `logread`; tag `mqttwol`.
-
-Reload trigger: **`procd_add_reload_trigger mqttwol`** recomputes the service whenever UCI commits (LuCI commits already call restart in `mqttwol.lua`).
+Жёсткие зависимости: **`luci-base`**, **`mosquitto-client`**, **`etherwake`**.
 
 ---
 
-## File tree
+## Как это устроено (схема)
+
+### Блок-схема потоков
+
+```mermaid
+flowchart TB
+  subgraph lu["LuCI в браузере"]
+    UI["view mqttwol.js\n(form.Map + DeviceSelect)"]
+  end
+
+  subgraph cfg["Конфигурация"]
+    UCI["/etc/config/mqttwol"]
+  end
+
+  subgraph svc["На роутере"]
+    RC["/etc/init.d/mqttwol"]
+    PROC["procd"]
+    WK["mqttwol-sub"]
+  end
+
+  MQTT["MQTT-брокер"]
+  LAN["LAN / выбранные ifaces"]
+
+  UI -->|"Save & Apply"| UCI
+  RC -->|"читает UCI, env"| PROC
+  PROC --> WK
+  MQTT -->|"mosquitto_sub"| WK
+  WK -->|"etherwake -i iface MAC"| LAN
+```
+
+### ASCII (упрощённо)
 
 ```
-luci-app-mqttwol/
-├── Makefile                         # feeds/package recipe and install layout
-├── README.md                        # operational & maintenance documentation
-├── build-sdk-packages.sh            # SDK docker build for apk+ipk
+  Браузер (LuCI)
+       │  mqttwol.js: форма, DeviceSelect (много интерфейсов), флаг MQTT auth
+       ▼
+  /etc/config/mqttwol  (uci)
+       │
+  /etc/init.d/mqttwol  (procd)
+       │  MQTTWOL_* env, список интерфейсов → MQTTWOL_INTERFACES
+       ▼
+  /usr/sbin/mqttwol-sub
+       │  цикл: mosquitto_sub | read → wake
+       ├──────────► MQTT broker
+       └──────────► etherwake на каждом iface из списка
+```
+
+**Важно:** интерфейс LuCI — это **JavaScript view** (`form.Map`), а не старый Lua-CBI. Виджет **`widgets.DeviceSelect`** тот же по смыслу, что поле «Устройство» на странице сетевых интерфейсов OpenWrt (иконки, мосты, Wi‑Fi, псевдонимы `@…`, пользовательский ввод). Сохранённые значения — **имена устройств ядра** (например `br-lan`, `phy0-ap0`); в UCI они хранятся как **`list interface '…'`**.
+
+---
+
+## Поведение по шагам
+
+1. **Пользователь** открывает **Services → MQTT Wake-on-LAN**, правит брокер, порт, топик, флаг **MQTT use authentication**, при необходимости логин/пароль, выбирает один или несколько интерфейсов в **Ethernet interfaces**, включает сервис и жмёт сохранение.
+2. **`mqttwol.js`** при сохранении: если auth выключен — **удаляет** из UCI `username` и `password`; затем коммитит изменения и вызывает **`/etc/init.d/mqttwol restart`** (нужны права в ACL, см. ниже).
+3. **`/etc/init.d/mqttwol`** при `enabled=1` собирает список интерфейсов из **`config_list_foreach main interface`** (и запасной вариант для старого `option interface`), для каждого элемента пытается **`network_get_physdev`** (OpenWrt `network.sh`); если логическое имя не резолвится — в список попадает строка как есть. В procd передаётся **`MQTTWOL_INTERFACES`** (через пробел).
+4. **`mqttwol-sub`** в бесконечном цикле запускает **`mosquitto_sub`**, читает строки, нормализует и проверяет MAC, для каждого MAC вызывает **`etherwake -i <iface>`** для **каждого** интерфейса из **`MQTTWOL_INTERFACES`**. Логи: **`logread`**, тег **`mqttwol`**.
+5. **`procd_add_reload_trigger mqttwol`** перезагружает сервис при изменении конфига `mqttwol` снаружи LuCI.
+
+---
+
+## Дерево репозитория (актуальное)
+
+Корень **`luci-app-mqttwol-project`** — каталог для SDK/Docker и релизов; исходники приложения лежат во вложенной папке **`luci-app-mqttwol/`**.
+
+```
+luci-app-mqttwol-project/
+├── README.md                    # этот файл
+├── build-sdk-packages.sh        # сборка .apk / .ipk в Docker (OpenWrt SDK)
+├── install.sh                   # установка последнего релиза с GitHub (apk/opkg)
+├── .dockerignore
 ├── sdk/
-│   ├── Dockerfile-sdk-apk-base      # cached SDK base for apk builds
-│   ├── Dockerfile-sdk-apk           # package build on apk base
-│   ├── Dockerfile-sdk-ipk-base      # cached SDK base for ipk builds
-│   └── Dockerfile-sdk-ipk           # package build on ipk base
-├── install.sh                       # podkop-style auto-installer from GitHub release
-├── luasrc/
-│   ├── controller/
-│   │   └── mqttwol.lua             # Registers Services → MQTT Wake-on-LAN
-│   └── model/
-│       └── cbi/
-│           └── mqttwol.lua          # CBI bindings for mqttwol.main
-└── root/
-    ├── etc/
-    │   ├── config/
-    │   │   └── mqttwol             # authoritative defaults (ship & upgrade safe)
-    │   └── init.d/
-    │       └── mqttwol             # procd wrapper exporting env vars for worker
-    └── usr/
-        └── sbin/
-            └── mqttwol-sub          # mosquitto_sub ↔ etherwake pipeline
+│   ├── Dockerfile-sdk-apk-base
+│   ├── Dockerfile-sdk-apk
+│   ├── Dockerfile-sdk-ipk-base
+│   └── Dockerfile-sdk-ipk
+├── dist/sdk/                    # артефакты сборки (apk/, ipk/, опционально logs/)
+└── luci-app-mqttwol/            # каталог пакета для feeds / SDK
+    ├── Makefile
+    ├── htdocs/luci-static/resources/view/mqttwol.js
+    └── root/
+        ├── etc/config/mqttwol
+        ├── etc/init.d/mqttwol
+        ├── usr/sbin/mqttwol-sub
+        ├── usr/share/luci/menu.d/luci-app-mqttwol.json
+        └── usr/share/rpcd/acl.d/luci-app-mqttwol.json
 ```
 
-On device, staged paths mirror **`root/`** plus LuCI artefacts under **`/usr/lib/lua/luci/`**.
+На устройстве дополнительно появляются:
+
+- **`/www/luci-static/resources/view/mqttwol.js`**
+- **`/usr/share/luci/menu.d/luci-app-mqttwol.json`**
+- **`/usr/share/rpcd/acl.d/luci-app-mqttwol.json`**
+
+Lua-контроллер и **`model/cbi`** в пакете **не используются** — меню и маршрут задаётся через **`menu.d`** и **`type: view`**.
 
 ---
 
-## UCI schema (`config mqttwol 'main'`)
+## UCI: секция `config mqttwol 'main'`
 
-| Option       | Meaning                                      |
-|-------------|-----------------------------------------------|
-| `enabled`   | `1` activates procd-managed subscriber        |
-| `server`    | MQTT hostname or IP                           |
-| `port`      | MQTT port (defaults to `1883` in bootstrap)    |
-| `username`  | Optional (`-u`); blank disables auth block    |
-| `password`  | Optional MQTT password (`-P` when username set)|
-| `topic`     | Single topic `mosquitto_sub` listens to       |
-| `interface` | Network device for `etherwake -i`, default **`br-lan`** |
+| Параметр    | Тип / смысл |
+|------------|-------------|
+| `enabled`  | `1` — сервис активен under procd |
+| `server`   | хост или IP брокера MQTT |
+| `port`     | порт (по умолчанию в шаблоне `1883`) |
+| `use_auth` | `1` — использовать логин/пароль для `mosquitto_sub` |
+| `username` | логин (если `use_auth=1`) |
+| `password` | пароль (если `use_auth=1`) |
+| `topic`    | один топик подписки |
+| `interface`| **`list`** — одно или несколько имён интерфейсов для `etherwake` |
 
-MQTT payloads must resemble `00:11:22:33:44:55` ; dashed inputs are canonicalised internally but must still encode six octets.
-
----
-
-## Init-script behaviour (`/etc/init.d/mqttwol`)
-
-`start_service`:
-
-1. `config_load mqttwol`; fetch `enabled` (`main`).
-2. Return immediately when `enabled` ≠ `"1"` (no `procd` instance).
-3. Validate `server`, `topic`, and `interface` are non-empty; fail fast with syslog error if invalid.
-4. `procd_open_instance` executing `/usr/sbin/mqttwol-sub` with exported env mirrors (see Makefile postinst optionally enabling symlink).
-5. `procd_close_instance`; `reload_service → restart`; `service_triggers` notifies `pod`.
-
-`mqttwol-sub` honours:
-
-- **`MQTTWOL_SERVER`**, **`MQTTWOL_PORT`**, **`MQTTWOL_TOPIC`**, **`MQTTWOL_INTERFACE`** (mandatory).
-- **`MQTTWOL_USERNAME` / `MQTTWOL_PASSWORD`** only when subscribing with credentials.
+Пейлоад MQTT: строка с MAC в виде `aa:bb:cc:dd:ee:ff` (допускается нормализация дефисов и регистра во воркере).
 
 ---
 
-## Building & deploying
+## ACL и меню
 
-Copy the bundle into OpenWrt’s tree (preferred location: `package/luci-app-mqttwol` or feeds clone). Example:
-
-```
-cp -a luci-app-mqttwol /path/to/openwrt/package/
-./scripts/feeds update
-./scripts/feeds install mosquitto-client etherwake luci-base
-make menuconfig
-# LuCI → 3. Applications → luci-app-mqttwol <M/*>
-make package/luci-app-mqttwol/compile V=s
-```
-
-On OpenWrt 25+ with APK backend (`CONFIG_USE_APK=y`) output format is:
-
-- `luci-app-mqttwol-<version>.apk`
-
-Typical location:
-
-- `openwrt/bin/packages/<arch>/base/luci-app-mqttwol-<version>.apk`
-
-### SDK build (apk + ipk)
-
-Like podkop, this project now ships SDK docker build files and helper script.
-
-```sh
-./build-sdk-packages.sh
-```
-
-First run builds SDK base images (feeds/setup), next runs reuse cache.
-To force refresh SDK base layers:
-
-```sh
-./build-sdk-packages.sh ./dist/sdk --rebuild-base
-```
-
-Build only one format:
-
-```sh
-./build-sdk-packages.sh ./dist/sdk --only-apk
-./build-sdk-packages.sh ./dist/sdk --only-ipk
-```
-
-Artifacts are exported to:
-
-- `dist/sdk/apk/luci-app-mqttwol-*.apk`
-- `dist/sdk/ipk/luci-app-mqttwol-*.ipk`
-
-### Public release workflow (recommended)
-
-1. Build both formats with SDK script:
-
-```sh
-./build-sdk-packages.sh ./dist/sdk
-```
-
-2. Upload release assets to GitHub Release:
-   - `dist/sdk/apk/luci-app-mqttwol-*.apk`
-   - `dist/sdk/ipk/luci-app-mqttwol-*.ipk`
-
-### One-command install script (podkop-style)
-
-After publishing release assets, users can install directly from your repo:
-
-```sh
-wget -O - https://raw.githubusercontent.com/altplus255/luci-app-mqttwol/main/install.sh | sh
-```
-
-`install.sh` automatically:
-- detects `apk` vs `opkg`,
-- updates package indexes,
-- installs dependencies (`luci-base`, `mosquitto-client`, `etherwake`),
-- downloads latest release package,
-- for `apk` runs `apk add --allow-untrusted`,
-- installs and starts `mqttwol`.
-
-Optional format override:
-
-```sh
-PKG_FMT=apk wget -O - https://raw.githubusercontent.com/altplus255/luci-app-mqttwol/main/install.sh | sh
-PKG_FMT=ipk wget -O - https://raw.githubusercontent.com/altplus255/luci-app-mqttwol/main/install.sh | sh
-```
-
-If your workstation cannot write `/openwrt/package` due to root ownership, relocate with `sudo chown` or build from a user-owned clone.
+- Пункт меню зависит от **`acl: luci-app-mqttwol`** и наличия конфига **`uci: mqttwol`**.
+- В ACL выданы чтение/запись **`uci` → `mqttwol`**, **`luci-rpc` → getNetworkDevices** (нужен для **DeviceSelect**), **`exec`** для **`/etc/init.d/mqttwol restart`** после сохранения формы.
+- После установки пакета **`postinst`** выполняет **`/etc/init.d/rpcd reload`**, чтобы подхватить ACL. Профиль пользователя LuCI должен включать право **`luci-app-mqttwol`** (как и у других приложений `luci-app-*`).
 
 ---
 
-## Testing before / after packaging
+## Сборка пакета
 
-**On build host (shell audit):**
+### Вариант A: Docker SDK (рекомендуется для релизов)
 
-- `shellcheck root/usr/sbin/mqttwol-sub root/etc/init.d/mqttwol` (optional but recommended).
-- Verify **Makefile** `DEPENDS` covers `+luci-base +mosquitto-client +etherwake`.
+Требования: **Docker** (при отсутствии прав — запуск через **`sudo`**).
 
-**On router (manual smoke, without package install):**
+Из корня **`luci-app-mqttwol-project`**:
 
-1. Install `mosquitto-client`, `etherwake`, `luci-base`.
-2. Copy `root/etc/config/mqttwol`, `root/etc/init.d/mqttwol`, `root/usr/sbin/mqttwol-sub` to matching paths, `chmod +x` scripts.
-3. Edit `/etc/config/mqttwol` with your broker & topic; `uci commit mqttwol`.
-4. `/etc/init.d/mqttwol enable && /etc/init.d/mqttwol start`.
-5. `logread -f | grep mqttwol` to watch events.
-6. Publish a test MAC (`mosquitto_pub -h broker -t home/router/wol -m "$(printf '00:11:22:33:44:66')"`).
-7. Confirm target NIC toggles WoL LEDs / wakes host; adjust `interface` option if bridging differs.
+```sh
+sudo ./build-sdk-packages.sh
+```
+
+Артефакты по умолчанию:
+
+- **`dist/sdk/apk/luci-app-mqttwol-*.apk`**
+- **`dist/sdk/ipk/luci-app-mqttwol_*.ipk`** (имя может отличаться суффиксом архитектуры)
+
+Полезные опции:
+
+| Опция | Назначение |
+|--------|------------|
+| `--out-dir <dir>` | каталог вывода вместо `./dist/sdk` |
+| `--only-apk` | только APK (OpenWrt с пакетным менеджером apk) |
+| `--only-ipk` | только IPK (opkg) |
+| `--rebuild-base` | пересобрать базовый образ SDK с feeds |
+| `--reset-builders` | пересоздать контейнеры-сборщики |
+| `--enable-log` | писать лог в `logs/build-*.log` и дублировать вывод |
+
+Повторные запуски **переиспользуют** кэшированные образы и контейнеры **`luci-app-mqttwol-sdk-*-builder`**, пока не указаны **`--rebuild-base`** / **`--reset-builders`**.
+
+Переменная **`MAKE_VERBOSE`** задаёт уровень подробности `make` внутри контейнера (по умолчанию в скрипте используется непустое значение, см. `build-sdk-packages.sh`).
+
+### Вариант B: полное дерево OpenWrt
+
+Скопируйте каталог **`luci-app-mqttwol`** в **`package/`** или подключите как feed, установите зависимости feeds, в **`menuconfig`** включите **`luci-app-mqttwol`**, затем:
+
+```sh
+make package/luci-app-mqttwol/compile V=s -j"$(nproc)"
+```
 
 ---
 
-## Operational notes / future tweaks
+## Публикация и установка для пользователей
 
-- **Security**: plaintext MQTT credentials reside in `/etc/config`; consider TLS broker & VPN instead of WAN exposure.
-- **Payload validation**: rejects non-mac strings to avoid spawning `etherwake` with nonsense.
-- **Multiple targets**: subscribe with wildcards (`#`, `+`) is not wired in; broaden code if needed.
-- **IPv6 MQTT**: ensure broker reachable; `datatype "host"` in LuCI accommodates DNS or literal addresses.
-- **Scaling**: sequential `etherwake` calls suffice for homelab bursts; offload to queue worker if bursts grow.
+1. Соберите **apk** и/или **ipk** (см. выше).
+2. Выложите файлы в **GitHub Releases** (или другой хостинг).
+3. В **`install.sh`** проверьте URL API репозитория (`REPO_API`); при необходимости замените на свой org/repo.
 
-Maintain this README when extending features so tooling (and collaborators) regain context instantly.
+Пример запуска установщика на роутере:
+
+```sh
+wget -O /tmp/install.sh https://raw.githubusercontent.com/YOUR_ORG/YOUR_REPO/main/install.sh
+sh /tmp/install.sh
+```
+
+Переменная **`PKG_FMT=apk`** или **`PKG_FMT=ipk`** принудительно задаёт формат пакета; **`auto`** определяет по наличию **`apk`** / **`opkg`**.
+
+Установка **`apk`** выполняется с **`--allow-untrusted`** для локальных/своих сборок (как в упрощённых скриптах вроде podkop).
+
+---
+
+## Проверка на роутере
+
+- **`logread -f | grep mqttwol`** — события воркера.
+- Тест MQTT: **`mosquitto_pub -h … -t <topic> -m '11:22:33:44:55:66'`** (подставьте свой топик и валидный MAC цели).
+- Убедитесь, что выбранные интерфейсы действительно «смотрят» в ту L2-сеть, где живёт WoL-клиент.
+
+Опционально на ПК сборки: **`shellcheck`** для **`mqttwol-sub`** и **`/etc/init.d/mqttwol`**.
+
+---
+
+## Замечания по безопасности и эксплуатации
+
+- Логин и пароль MQTT в UCI передаются в **`mosquitto_sub`**; для незащищённых сетей лучше VPN или брокер с TLS и изоляция от WAN.
+- Несколько интерфейсов увеличивают число magic packet’ов на одно сообщение MQTT (по одному проходу `etherwake` на интерфейс).
+- Политики подписок с масками (`#`) в этом пакете не настраиваются — только один явный топик в UCI.
+
+При добавлении функций поддерживайте этот файл в актуальном состоянии вместе с **`Makefile`** и **`mqttwol.js`**.
