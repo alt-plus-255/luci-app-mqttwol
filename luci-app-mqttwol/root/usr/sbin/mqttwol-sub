@@ -8,7 +8,7 @@ set -eu
 MQTTWOL_SERVER="${MQTTWOL_SERVER:?}"
 MQTTWOL_PORT="${MQTTWOL_PORT:-1883}"
 MQTTWOL_TOPIC="${MQTTWOL_TOPIC:?}"
-MQTTWOL_INTERFACE="${MQTTWOL_INTERFACE:?}"
+MQTTWOL_INTERFACES="${MQTTWOL_INTERFACES:?}"
 
 USERNAME="${MQTTWOL_USERNAME:-}"
 PASSWORD="${MQTTWOL_PASSWORD-}"
@@ -40,10 +40,12 @@ wake() {
 		return 0
 	fi
 
-	logger -t mqttwol -p daemon.notice "WOL for $line via $MQTTWOL_INTERFACE"
-	if ! etherwake -i "$MQTTWOL_INTERFACE" "$line" 2>/dev/null; then
-		warn "etherwake failed for $line"
-	fi
+	for ifc in $MQTTWOL_INTERFACES; do
+		logger -t mqttwol -p daemon.notice "WOL for $line via $ifc"
+		if ! etherwake -i "$ifc" "$line" 2>/dev/null; then
+			warn "etherwake failed for $line on $ifc"
+		fi
+	done
 }
 
 run_stream() {

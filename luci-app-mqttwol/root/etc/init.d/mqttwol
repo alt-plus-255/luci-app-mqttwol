@@ -6,20 +6,42 @@ STOP=10
 USE_PROCD=1
 PROG=/usr/sbin/mqttwol-sub
 
+. /lib/functions/network.sh
+
+append_iface() {
+	local logical="$1"
+	local dev
+
+	if network_get_physdev dev "$logical" 2>/dev/null && [ -n "$dev" ]; then
+		MQTTWOL_IFACES="${MQTTWOL_IFACES:+$MQTTWOL_IFACES }$dev"
+	else
+		MQTTWOL_IFACES="${MQTTWOL_IFACES:+$MQTTWOL_IFACES }$logical"
+	fi
+}
+
 start_service() {
 	config_load mqttwol
 
-	local enabled server port username password topic interface
+	local enabled server port use_auth username password topic
 
 	config_get enabled main enabled 0
 	[ "$enabled" = "1" ] || return 0
 
 	config_get server main server
 	config_get port main port 1883
+	config_get use_auth main use_auth 0
 	config_get username main username
 	config_get password main password
 	config_get topic main topic
-	config_get interface main interface "br-lan"
+
+	MQTTWOL_IFACES=""
+	config_list_foreach main interface append_iface
+	if [ -z "$MQTTWOL_IFACES" ]; then
+		config_get legacy_if main interface "br-lan"
+		for w in $legacy_if; do
+			append_iface "$w"
+		done
+	fi
 
 	[ -n "$server" ] || {
 		logger -t mqttwol -p daemon.err "mqttwol: option server is empty"
@@ -29,8 +51,8 @@ start_service() {
 		logger -t mqttwol -p daemon.err "mqttwol: option topic is empty"
 		return 1
 	}
-	[ -n "$interface" ] || {
-		logger -t mqttwol -p daemon.err "mqttwol: option interface is empty"
+	[ -n "$MQTTWOL_IFACES" ] || {
+		logger -t mqttwol -p daemon.err "mqttwol: no interface selected"
 		return 1
 	}
 
@@ -38,10 +60,15 @@ start_service() {
 	procd_set_param command "$PROG"
 	procd_set_param env MQTTWOL_SERVER="$server"
 	procd_set_param env MQTTWOL_PORT="$port"
-	procd_set_param env MQTTWOL_USERNAME="$username"
-	procd_set_param env MQTTWOL_PASSWORD="$password"
+	if [ "$use_auth" = "1" ]; then
+		procd_set_param env MQTTWOL_USERNAME="$username"
+		procd_set_param env MQTTWOL_PASSWORD="$password"
+	else
+		procd_set_param env MQTTWOL_USERNAME=""
+		procd_set_param env MQTTWOL_PASSWORD=""
+	fi
 	procd_set_param env MQTTWOL_TOPIC="$topic"
-	procd_set_param env MQTTWOL_INTERFACE="$interface"
+	procd_set_param env MQTTWOL_INTERFACES="$MQTTWOL_IFACES"
 	procd_set_param respawn 3600 5 5
 	procd_set_param stdout 1
 	procd_set_param stderr 1
